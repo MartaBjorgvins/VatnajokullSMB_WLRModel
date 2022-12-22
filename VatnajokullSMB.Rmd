@@ -1,0 +1,989 @@
+---
+title: "VatnajokullSMB"
+author: "Marta Björgvinsdóttir"
+date: '2022-10-05'
+output:
+  html_document:
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dev = "png",
+                      dpi = 300,
+                      echo = FALSE,
+                      cache = TRUE)
+
+library(readxl)
+library(dplyr)
+library(reshape2)
+library(leaps)
+library(rcompanion)
+library(broom)
+library(ggplot2)
+library(olsrr)
+library(purrr)
+library(grid)
+library(gridExtra)
+library(latex2exp)
+library(tidyverse)
+library(leaflet)
+```
+
+
+```{r ggplot theme , include=FALSE}
+theme_ben <- function(base_size = 14) {
+  theme_bw(base_size = base_size) %+replace%
+    theme(
+      # L'ensemble de la figure
+      plot.title = element_text(size = rel(1), face = "bold", margin = margin(0,0,5,0), hjust = 0),
+      # Zone où se situe le graphique
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      # Les axes
+      axis.title = element_text(size = rel(0.85), face = "bold"),
+      axis.text = element_text(size = rel(0.70), face = "bold"),
+      axis.line = element_line(color = "black", arrow = arrow(length = unit(0.3, "lines"), type = "closed")),
+      # La légende
+      legend.title = element_text(size = rel(0.85), face = "bold"),
+      legend.text = element_text(size = rel(0.70), face = "bold"),
+      legend.key = element_rect(fill = "transparent", colour = NA),
+      legend.key.size = unit(1.5, "lines"),
+      legend.background = element_rect(fill = "transparent", colour = NA),
+      # Les étiquettes dans le cas d'un facetting
+      strip.background = element_rect(fill = "#17252D", color = "#17252D"),
+      strip.text = element_text(size = rel(0.85), face = "bold", color = "white", margin = margin(5,0,5,0))
+    )
+}
+# Changing the default theme
+theme_set(theme_ben())
+```
+
+
+# Data read inn and processing
+## Read inn
+### SMB
+```{r SMB data}
+HARMONIE <- read_excel("data/SMB_Vatnajokull_HARMONIE.xls")
+from <- rep("HIRHAM5",11)
+HARMONIE_1981_1991 <- cbind(HARMONIE[1:11,],from)
+SMB <- read.table("data/SMB_meafk.txt",header = T,
+                  dec = ".",sep = ";", na.strings = NaN)
+from <- rep("Measurem.",29)
+VMB <- cbind(SMB[5:33,1:4],from)
+VMB <- VMB %>%
+  rename(bw = Vbw, bs = Vbs, bn = Vbn)
+VMB <- rbind(HARMONIE_1981_1991,VMB)
+```
+
+### SST
+```{r SST data}
+SST <- read.table("data/SST.txt",header = T,dec = ".",sep=",")
+SST_SE_ADUR <- read.table("data/sst_data.txt",header = T,dec = ".",sep=",")
+SST$sst_SE <- c(SST_SE_ADUR$y,rep(NA,4))
+SST$month <- factor(substr(SST$Time, 4,6),levels = month.abb)
+SST$monthnr <- rep(1:12,166)
+SST$ar <- as.numeric(substr(SST$Time, 8,11))
+SST$year <- SST$ar + (SST$monthnr > 8)
+ggplot(SST[409:1980,],aes(ar,sst_NE)) + geom_line(aes(colour=month)) + xlab("Year") + ylab("Temperature (°C)") + ggtitle("SST_NE") + theme(legend.position="none")
+ggplot(SST[409:1980,],aes(ar,sst_NW)) + geom_line(aes(colour=month)) + xlab("Year") + ylab("Temperature (°C)") + ggtitle("SST_NW") + theme(legend.position="none")
+ggplot(SST[409:1980,],aes(ar,sst_SW)) + geom_line(aes(colour=month)) + xlab("Year") + ylab("Temperature (°C)") + ggtitle("SST_SW") + theme(legend.position="none")
+ggplot(SST[409:1980,],aes(ar,sst_SE)) + geom_line(aes(colour=month)) + xlab("Year") + ylab("Temperature (°C)") + ggtitle("SST_SE") + theme(legend.position="none")
+```
+
+### Air temperature
+```{r AirT data}
+AirTemp <- read.table("data/t_stykk_1830_2015.txt", header = T,
+                      dec = "." , sep = "")
+AirTempseinnipartur <- read.table("data/t_stykk_2016_2020.txt",
+                                  header = F,
+                                  dec = "." , sep = "")
+AirTempseinnipartur <- AirTempseinnipartur %>%
+  rename(ar = V2 , man = V3 , t = V4)
+AirTemp <- rbind(AirTemp[,2:4],AirTempseinnipartur[,2:4])
+AirTemp$year <- AirTemp$ar + (AirTemp$man > 8)
+AirTemp$man <- factor(month.abb[AirTemp$man], levels = month.abb)
+#plot of the air temp data as it is now
+ggplot(AirTemp[721:2292,], aes(x = ar, y = t)) + geom_line(aes(colour=man)) + xlab("Year") + ylab("Temperature (°C)")+ ggtitle("AirT") + theme(legend.position="none")
+AirTemp$man <- sprintf('AirT_%s',AirTemp$man)
+```
+
+### NAO
+```{r NAO data}
+NAO <- read.table("data/norm.nao.monthly.b5001.current.ascii",
+                  header = F, dec = ".", sep = "")
+NAO <- NAO %>%
+  rename(ar = V1,
+         monthnr = V2,
+         NAO = V3)
+NAO$year <- NAO$ar + (NAO$monthnr > 8)
+NAO$man <- factor(month.abb[NAO$monthnr], levels = month.abb)
+NAO$month <- sprintf('NAO_%s',month.abb[NAO$monthnr])
+ggplot(NAO,aes(ar,NAO)) + geom_line(aes(colour=man)) + xlab("Year") + ylab("Index")+ ggtitle("NAO") + theme(legend.position="none")
+```
+
+###AO
+```{r AO data}
+AO <- read.table("data/monthly.ao.index.b50.current.ascii", header = F,
+                 dec = ".", sep = "")
+AO <- AO %>%
+  rename(ar = V1, monthnr = V2, AO = V3)
+AO$year <- AO$ar + (AO$monthnr > 8)
+AO$man <- factor(month.abb[AO$monthnr], levels = month.abb)
+AO$month <- sprintf('AO_%s',month.abb[AO$monthnr])
+ggplot(AO,aes(ar,AO)) + geom_line(aes(colour=man)) + xlab("Year") + ylab("Index")+ ggtitle("AO") + theme(legend.position="none")
+```
+
+### AMO
+```{r AMO data}
+AMOdata <- read.table("data/amon.us.long.data", header = F,
+                      dec = "." , sep = "",na.strings = "-99.990")
+AMOJanAug <- rbind(AMOdata[,c(2:9)],rep(NA,8))
+AMOJanAug$year <- 1856:2021
+AMOShifting <- rbind(rep(NA,4),AMOdata[,c(10:13)])
+AMOShifting$year <- 1856:2021
+AMO <- full_join(AMOJanAug,AMOShifting, by = "year")
+AMO <- AMO %>%
+  rename(AMOJan = V2, AMOFeb = V3, AMOMar = V4, AMOApr = V5,
+         AMOMay = V6, AMOJun = V7, AMOJul = V8, AMOAug = V9,
+         AMOSep = V10, AMOOct = V11, AMONov = V12, AMODec = V13)
+AMOp <- AMOdata[35:165,] |> 
+  rename(year = V1 , Jan = V2, Feb = V3, Mar = V4, Apr = V5, 
+         May = V6, Jun = V7, Jul = V8, Aug = V9, Sep = V10,
+         Oct = V11, Nov = V12, Dec = V13)
+AMOp <- melt(AMOp,id.vars = "year")
+ggplot(AMOp,aes(year,value)) + geom_line(aes(colour=variable)) + xlab("Year") + ylab("Index") + ggtitle("AMO") + theme(legend.position="none")
+```
+
+### GBI
+```{r GBI data}
+GBIdata <- read.table(file = "data/gbi.mon.data",header = F,
+                      dec = ".",na.strings = "-99.0")
+GBIJanAug <- rbind(GBIdata[,c(2:9)],rep(NA,8))
+GBIJanAug$year <- 1851:2021
+GBIShifting <- rbind(rep(NA,4),GBIdata[,c(10:13)])
+GBIShifting$year <- 1851:2021
+GBI <- full_join(GBIJanAug,GBIShifting, by = "year")
+GBI <- GBI %>%
+  rename(GBIJan = V2, GBIFeb = V3, GBIMar = V4, GBIApr = V5,
+         GBIMay = V6, GBIJun = V7, GBIJul = V8, GBIAug = V9,
+         GBISep = V10, GBIOct = V11,GBINov = V12, GBIDec = V13)
+GBIp <- GBIdata[40:170,] %>%
+  rename(year = V1, Jan = V2, Feb = V3, Mar = V4, Apr = V5, May = V6,
+         Jun = V7, Jul = V8, Aug = V9, Sep = V10, Oct = V11,
+         Nov = V12, Dec = V13)
+GBIp <- melt(GBIp,id.vars = "year")
+ggplot(GBIp,aes(year,value)) + geom_line(aes(colour=variable)) + xlab("Year") + ylab("Index") + ggtitle("GBI") + theme(legend.position="none")
+```
+
+```{r other data graph}
+grid_arrange_shared_legend <-
+  function(...,
+           ncol = 2,
+           nrow = 2,
+           position = c("bottom", "right")) {
+    
+    plots <- list(...)
+    position <- match.arg(position)
+    g <-
+      ggplotGrob(plots[[1]] + theme(legend.position = position))$grobs
+    legend <- g[[which(sapply(g, function(x)
+      x$name) == "guide-box")]]
+    lheight <- sum(legend$height)
+    lwidth <- sum(legend$width)
+    gl <- lapply(plots, function(x)
+      x + theme(legend.position = "none"))
+    gl <- c(gl, ncol = ncol, nrow = nrow)
+    
+    combined <- switch(
+      position,
+      "bottom" = arrangeGrob(
+        do.call(arrangeGrob, gl),
+        legend,
+        ncol = 1,
+        heights = unit.c(unit(1, "npc") - lheight, lheight)
+      ),
+      "right" = arrangeGrob(
+        do.call(arrangeGrob, gl),
+        legend,
+        ncol = 2,
+        widths = unit.c(unit(1, "npc") - lwidth, lwidth)
+      )
+    )
+    
+    grid.newpage()
+    grid.draw(combined)
+    
+    # return gtable invisibly
+    invisible(combined)
+    
+  }
+
+grid_arrange_shared_legend(p_sst_NE, p_sst_NW, p_sst_SE, p_sst_SW)
+```
+
+
+```{r other data graph}
+plot_grid(p_sst_NE, p_sst_NW, p_sst_SE, p_sst_SW, p_AirT, p_NAO, p_AO, p_AMO, p_GBI , labels=c("sst_NE", "sst_NW", "sst_SE", "sst_SW", "AirT", "NAO", "AO", "AMO", "GBI"), ncol = 2)
+```
+
+
+```{r short format}
+AirTemp <- dcast(AirTemp[,2:4], year ~ man, value.var = "t")
+AO <- dcast(AO[,c("month","year","AO")],
+            year ~ month, value.var = "AO")
+NAO <- dcast(NAO[,c("month","year","NAO")],
+             year ~ month, value.var = "NAO")
+SST_NE <- SST[,c(2,6,9)]
+SST_NE$month <- sprintf('sstNE_%s',SST_NE$month)
+SST_NE <- dcast(SST_NE, year ~ month, value.var = "sst_NE")
+SST_NW <- SST[,c(3,6,9)]
+SST_NW$month <- sprintf('sstNW_%s',SST_NW$month)
+SST_NW <- dcast(SST_NW, year ~ month, value.var = "sst_NW")
+SST_SW <- SST[,c(4,6,9)]
+SST_SW$month <- sprintf('sstSW_%s',SST_SW$month)
+SST_SW <- dcast(SST_SW, year ~ month, value.var = "sst_SW")
+SST_SE <- SST[,c(5,6,9)]
+SST_SE$month <- sprintf('sstSE_%s',SST_SE$month)
+SST_SE <- dcast(SST_SE, year ~ month, value.var = "sst_SE")
+```
+
+```{r combine}
+MBData <- Reduce(full_join,
+                 list(AirTemp,GBI,AMO,
+                      SST_NE,SST_NW,SST_SW,SST_SE,
+                      AO,NAO,VMB))
+
+WinterMBData <- Reduce(full_join,
+                       list(AirTemp[,c(1,2,4:6,9:13)],
+                            GBI[,c(1:5,9:13)],
+                            AMO[,c(1:5,9:13)],
+                            SST_NE[,c(1,2,4:6,9:13)],
+                            SST_NW[,c(1,2,4:6,9:13)],
+                            SST_SW[,c(1,2,4:6,9:13)],
+                            SST_SE[,c(1,2,4:6,9:13)],
+                            AO[,c(1,2,4:6,9:13)],
+                            NAO[,c(1,2,4:6,9:13)],
+                            VMB[,c(1,3)]))
+WinterMBData$AirT_winter <- rowMeans(WinterMBData[,2:10])
+WinterMBData$GBIwinter <- rowMeans(WinterMBData[,11:19])
+WinterMBData$AMOwinter <- rowMeans(WinterMBData[,20:28])
+WinterMBData$sstNE_winter <- rowMeans(WinterMBData[,29:37])
+WinterMBData$sstNW_winter <- rowMeans(WinterMBData[,38:46])
+WinterMBData$sstSW_winter <- rowMeans(WinterMBData[,47:55])
+WinterMBData$sstSE_winter <- rowMeans(WinterMBData[,56:64])
+WinterMBData$AO_winter <- rowMeans(WinterMBData[,65:73])
+WinterMBData$NAO_winter <- rowMeans(WinterMBData[,74:82])
+SummerMBData <- Reduce(full_join,
+                       list(AirTemp[,c(1,3,7,8,10,13)],
+                            GBI[,c(5:10)],
+                            AMO[,c(5:10)],
+                            SST_NE[,c(1,3,7,8,10,13)],
+                            SST_NW[,c(1,3,7,8,10,13)],
+                            SST_SW[,c(1,3,7,8,10,13)],
+                            SST_SE[,c(1,3,7,8,10,13)],
+                            AO[,c(1,3,7,8,10,13)],
+                            NAO[,c(1,3,7,8,10,13)],
+                            VMB[,1:2]))
+SummerMBData$AirT_summer <- rowMeans(SummerMBData[,2:6])
+SummerMBData$GBIsummer <- rowMeans(SummerMBData[,7:11])
+SummerMBData$AMOsummer <- rowMeans(SummerMBData[,12:16])
+SummerMBData$sstNE_summer <- rowMeans(SummerMBData[,17:21])
+SummerMBData$sstNW_summer <- rowMeans(SummerMBData[,22:26])
+SummerMBData$sstSW_summer <- rowMeans(SummerMBData[,27:31])
+SummerMBData$sstSE_summer <- rowMeans(SummerMBData[,32:36])
+SummerMBData$AO_summer <- rowMeans(SummerMBData[,37:41])
+SummerMBData$NAO_summer <- rowMeans(SummerMBData[,42:46])
+SummerMBData$EyjafjGos <- 0 + (SummerMBData$year == 2010)
+```
+
+```{r model selection vetur}
+#Finna líkön, eitt fyrir vetrar og eitt fyrir sumarafkomu.
+#Byrja hér aftur(og aftur) eftir að uppgötva villur í gögnum
+#Nota 40 gagnapunkta þ.e. bæði harmonie og mælingar.
+#Finnum líkön fyrst með regsubset skipuninni
+#Vetrarafkoma líkan fyrir 1981 til 2020
+WinterMBdata1981_2020 <- WinterMBData[152:191,]
+Vbw_Best_Subset <- regsubsets(bw~., WinterMBdata1981_2020[,-1],
+                              nbest = 2,
+                              nvmax = 4, really.big = T,
+                              method = "exhaustive")
+Vbw_SummaryBestSubset <- summary(Vbw_Best_Subset)
+Vbw_SummaryBestSubset$adjr2[5:8]
+Vbw_SummaryBestSubset$bic
+Vbw_SummaryBestSubset$rss
+
+coef(Vbw_Best_Subset,5:8)
+
+Vbw_forward_Subset <- regsubsets(bw~., WinterMBdata1981_2020[,-1],
+                                 nbest = 4,
+                                 nvmax = 4, method = "forward")
+Vbw_SummaryforwardSubset <- summary(Vbw_forward_Subset)
+Vbw_SummaryforwardSubset$adjr2[9:16]
+Vbw_SummaryforwardSubset$bic
+Vbw_SummaryforwardSubset$rss
+coef(Vbw_forward_Subset,9:12)
+
+Vbw_seqrep_Subset <- regsubsets(bw~., WinterMBdata1981_2020[,-1],
+                                nbest = 4,
+                                nvmax = 4, method = "seqrep")
+Vbw_SummaryseqrepSubset <- summary(Vbw_seqrep_Subset)
+Vbw_SummaryseqrepSubset$adjr2
+Vbw_SummaryseqrepSubset$bic
+Vbw_SummaryseqrepSubset$rss
+
+coef(Vbw_seqrep_Subset,9:12)
+
+lmbw1 <- lm(bw ~ sstNE_Apr + sstSW_May + GBIwinter,
+            WinterMBdata1981_2020)
+summary(lmbw1)
+lmbw2 <- lm(bw ~ AirT_Feb + GBINov + GBIwinter,
+            WinterMBdata1981_2020)
+summary(lmbw2)
+glance(lmbw1) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+glance(lmbw2) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+#Hér er lmbw2 betra
+
+#mynd fyrir lokaverkafni
+lmbw3_1 <- lmbw2
+glance(lmbw3_1) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+lmbw4_1 <- lm(bw ~ AirT_Feb + GBINov + NAO_Jan + GBIwinter, WinterMBdata1981_2020)
+glance(lmbw4_1) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+lmbw4_2 <- lm(bw ~ AirT_Feb + GBINov + NAO_Apr + GBIwinter, WinterMBdata1981_2020)
+glance(lmbw4_2) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+lmbw4_3 <- lm(bw ~ AirT_Feb + GBIJan + GBINov + GBIwinter, WinterMBdata1981_2020)
+glance(lmbw4_3) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+lmbw4_4 <- lm(bw ~ AirT_Feb + GBINov + sstSE_Apr + GBIwinter, WinterMBdata1981_2020)
+glance(lmbw4_4) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+
+fits <- c(WinterMBdata1981_2020$bw,lmbw4_1$fitted.values,lmbw4_2$fitted.values,lmbw4_3$fitted.values,lmbw3_1$fitted.values)
+modelId <- c(rep("data",40),rep("a",40),rep("b",40),rep("c",40),rep("d",40))
+year <- rep(WinterMBdata1981_2020$year,5)
+
+plotData <- data.frame(cbind(year,modelId,fits))
+plotData$year <- as.numeric(plotData$year)
+plotData$fits <- as.numeric(plotData$fits)
+
+vetrarmodelplot <- ggplot(data = plotData, aes(x = year, y = fits, colour = modelId)) + geom_point() + geom_line() + theme_Publication() +  ggtitle("winter") 
+```
+
+
+```{r model selection sumar}
+##Sumarafkoma líkan fyrir 1981 til 2020
+SummerMBData1981_2020 <- SummerMBData[152:191,]
+Vbs_Best_Subset <- regsubsets(bs~., SummerMBData1981_2020[,-1],
+                              nbest = 4,
+                              nvmax = 4, really.big = T,
+                              method = "exhaustive")
+Vbs_SummaryBestSubset <- summary(Vbs_Best_Subset)
+Vbs_SummaryBestSubset$adjr2
+Vbs_SummaryBestSubset$bic
+
+coef(Vbs_Best_Subset,13:16)
+
+
+Vbs_forward_Subset <- regsubsets(bs~., SummerMBData1981_2020[,-1],
+                                 nbest = 4,
+                                 nvmax = 4, method = "forward")
+Vbs_SummaryforwardSubset <- summary(Vbs_forward_Subset)
+Vbs_SummaryforwardSubset$adjr2
+Vbs_SummaryforwardSubset$bic
+
+coef(Vbs_forward_Subset,9:16)
+
+Vbs_seqrep_Subset <- regsubsets(bs~., SummerMBData1981_2020[,-1],
+                                nbest = 4,
+                                nvmax = 4, method = "seqrep")
+Vbs_SummaryseqrepSubset <- summary(Vbs_seqrep_Subset)
+Vbs_SummaryseqrepSubset$adjr2
+Vbs_SummaryseqrepSubset$bic
+
+coef(Vbs_seqrep_Subset,13:16)
+
+#samalíkan  úr öllum hér
+lmbs1 <- lm(bs ~ AirT_Jul + AMOMay + sstSW_May, SummerMBData1981_2020)
+summary(lmbs1)
+
+#mynd fyrir lokaverkafni
+lmbs3_1 <- lmbs1
+glance(lmbs3_1) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+lmbs4_1 <- lm(bs ~ AirT_Jul + AMOMay + sstSW_May + EyjafjGos, SummerMBData1981_2020)
+glance(lmbs4_1) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+lmbs4_2 <- lm(bs ~ AirT_Jul + AMOMay + sstNW_May + sstSW_May, SummerMBData1981_2020)
+glance(lmbs4_2) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+lmbs4_3 <- lm(bs ~ AirT_Jul + AirT_Sep + AMOMay + sstSW_May, SummerMBData1981_2020)
+glance(lmbs4_3) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+lmbs4_4 <- lm(bs ~ AirT_Aug + AirT_Jul + AMOMay + sstSW_May, SummerMBData1981_2020)
+glance(lmbs4_4) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+
+fits <- c(SummerMBData1981_2020$bs,lmbs4_1$fitted.values,lmbs4_2$fitted.values,lmbs4_3$fitted.values,lmbs3_1$fitted.values)
+modelId <- c(rep("data",40),rep("a",40),rep("b",40),rep("c",40),rep("d",40))
+year <- rep(SummerMBData1981_2020$year,5)
+
+plotData <- data.frame(cbind(year,modelId,fits))
+plotData$year <- as.numeric(plotData$year)
+plotData$fits <- as.numeric(plotData$fits)
+
+sumarmodelplot <- ggplot(data = plotData, aes(x = year, y = fits, colour = modelId)) + geom_point() + geom_line()
+```
+
+
+```{r model selection aðrar aðferðir}
+#Notum nú aðrar aðferðir við að velja líkönin.
+# stepwise regression fyri sumar
+summermodel <- lm(bs ~ ., data = SummerMBData1981_2020)
+ols_step_both_p(summermodel, details = TRUE)
+#fyratu 3 skerfin gefa líkanið lmbs1
+
+# stepwise regression fyrir vetur
+wintermodel <- lm(bw ~ ., data = WinterMBdata1981_2020)
+ols_step_both_p(wintermodel, details = TRUE)
+#fyratu 3 skerfin gefa líkanið lmbw2
+
+
+# stepwise aic regression sumar
+ols_step_both_aic(summermodel)
+#sama útkoma og er komin
+
+# stepwise aic regression vetur
+ols_step_both_aic(wintermodel)
+#virkar ekki því of mikið sem gerist
+
+
+#Prufa nú með package bigstep
+library(bigstep)
+bigstepsummerdata <- prepare_data(SummerMBData1981_2020$bs, SummerMBData1981_2020[,-47])
+
+results <- stepwise(bigstepsummerdata, crit = aic)
+results$model
+summary(results)
+#Hér fæ ég líkan með 38 breitum
+#fystu skrefin gefa þó sama og lmbs1
+results <- stepwise(bigstepsummerdata, crit = bic)
+results$model
+summary(results)
+#líkan með 5 breytum sem inniheldur lmbs1 og er líka með EyjafjGos og AirT_Sep
+
+bigstepwinterdata <- prepare_data(WinterMBdata1981_2020$bw, WinterMBdata1981_2020[,-83])
+
+results <- stepwise(bigstepwinterdata, crit = aic)
+results$model
+summary(results)
+#hér kemur ekkert því stepwise setur sömu breytu inn aftur
+# fyrstu skrfin gefa sama og lmbw2
+results <- stepwise(bigstepwinterdata, crit = bic)
+results$model
+summary(results)
+#sama og í lmbw2
+
+forward(bigstepsummerdata, crit = aic)
+#AirT_Jul
+forward(bigstepwinterdata, crit = aic)
+#GBIwinter
+
+#smá föndur til að skoða
+bigstepsummerdata %>%
+  forward(aic) %>% 
+  forward(aic) %>% 
+  forward(aic) %>% 
+  forward(aic) %>%
+  forward(aic) %>%
+  backward(bic) %>%
+  backward(bic)
+
+bigstepwinterdata %>%
+  forward(aic) %>% 
+  forward(aic) %>% 
+  forward(aic) %>% 
+  backward(bic)
+
+bigstepsummerdata %>%
+  reduce_matrix(minpv = 0.15) %>%
+  stepwise(mbic) ->
+  results
+summary(results)
+
+bigstepsummerdata %>%
+  reduce_matrix(0.15) %>%
+  stepwise(bic) ->
+  results
+summary(results)
+
+bigstepwinterdata %>%
+  reduce_matrix(minpv = 0.15) %>%
+  stepwise(mbic) ->
+  results
+summary(results)
+
+bigstepwinterdata %>%
+  reduce_matrix(0.15) %>%
+  stepwise(bic) ->
+  results
+summary(results)
+
+lmbw3 <- lm(bw ~ GBIwinter + NAO_Apr + sstNE_Mar, WinterMBdata1981_2020)
+summary(lmbw3)
+#bera saman
+glance(lmbw2) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+glance(lmbw3) %>%
+  dplyr::select(adj.r.squared, sigma, AIC, BIC, p.value)
+#lmbw2 er enn betra.
+
+#Þá er ég komin með líkön með 3 breytum fyrir vetur og sumar
+#sumar, bs ~ AirT_Jul + AMOMay + sstSW_May
+#vetur, bw ~ AirT_Feb + GBINov + GBIwinter
+##Nú þarf nú að setja inn viktunarfylki til að leiðrétta fyrir harmonie.
+```
+
+```{r weigted linear reggresion models}
+WinterMB1992 <- WinterMBData[163:191,]
+winterlm1992 <- lm(bw ~ AirT_Feb + GBINov + GBIwinter, WinterMB1992)
+summary(winterlm1992)
+#skilar: Residual standard error: 0.2045 on 25 degrees of freedom
+#vetur:pridict fyrir árinn frá harmonie
+predictionBwHarmonie <- data.frame(
+  predict(winterlm1992,
+          WinterMBdata1981_2020[WinterMBdata1981_2020$year < 1992,],
+          interval = "prediction")
+  )
+year <- 1981:1991
+predictionBwHarmonie <- cbind(year,predictionBwHarmonie)
+BwHarmonie <- HARMONIE_1981_1991$bw
+#reikna úr sum of squared residuals fyrir predict og lm fit til að sjá hlutföllinn
+SSEbwfit <- sum(winterlm1992$residuals**2)
+SSEbwpred <- sum((BwHarmonie-predictionBwHarmonie$fit)**2)
+#calculate residual standard error
+k_w<-length(winterlm1992$coefficients)-1
+n_w<-length(winterlm1992$residuals)
+RSEbwfit <- sqrt(SSEbwfit/(n_w-(1+k_w)))
+#0.2045148
+RSEbwpred <- sqrt(SSEbwpred/(11-(1+k_w)))
+#0.2833268
+#svo hlutallið er
+RSEbwpred/RSEbwfit
+#1.385361
+
+Q_bw <- diag(c(rep(1.39**2,11),rep(1,29)))
+#þurfum að búa til X fylki fyrir vetur með AirT_Feb + GBINov + GBIwinter
+X_w <- as.matrix(cbind(rep(1,40),WinterMBdata1981_2020[,c(4,18,85)]))
+bw <- WinterMBdata1981_2020$bw
+#fáum þá mat á beturnar:
+B_bw <- solve(t(X_w)%*%solve(Q_bw)%*%X_w)%*%t(X_w)%*%solve(Q_bw)%*%bw
+B_bw
+
+SummerMB1992 <- SummerMBData[163:191,]
+summerlm1992 <- lm(bs ~ AirT_Jul + AMOMay + sstSW_May, SummerMB1992)
+summary(summerlm1992)
+#skilar: Residual standard error: 0.2506 on 25 degrees of freedom
+#sumar:pridict fyrir árinn frá harmonie
+predictionBsHarmonie <- data.frame(
+  predict(summerlm1992,
+          SummerMBData1981_2020[SummerMBData1981_2020$year < 1992,],
+          interval = "prediction")
+  )
+year <- 1981:1991
+predictionBsHarmonie <- cbind(year,predictionBsHarmonie)
+BsHarmonie <- HARMONIE_1981_1991$bs
+#reikna úr sum of squared residuals fyrir predict og lm fit til að sjá hlutföllinn
+SSEbsfit <- sum(summerlm1992$residuals**2)
+SSEbspred <- sum((BsHarmonie-predictionBsHarmonie$fit)**2)
+#calculate residual standard error
+k_s<-length(summerlm1992$coefficients)-1
+n_s<-length(summerlm1992$residuals)
+RSEbsfit <- sqrt(SSEbsfit/(n_s-(1+k_s)))
+#0.2505822
+RSEbspred <- sqrt(SSEbspred/(11-(1+k_s)))
+#0.3664045
+#svo hlutallið er
+RSEbspred/RSEbsfit
+#1.462213
+
+Q_bs <- diag(c(rep(1.46**2,11),rep(1,29)))
+#þurfum að búa til X fylki fyrir sumarið með AirT_Jul + AMOMay + sstSW_May
+X_s <- as.matrix(cbind(rep(1,40),SummerMBData1981_2020[,c(3,12,30)]))
+bs <- SummerMBData1981_2020$bs
+#fáum þá mat á beturnar:
+B_bs <- solve(t(X_s)%*%solve(Q_bs)%*%X_s)%*%t(X_s)%*%solve(Q_bs)%*%bs
+B_bs
+```
+
+```{r myndir af gögnunum sem eru notuð í líkönin}
+#AMO_May
+coeff <- 1/4
+
+pAMO_May <- ggplot(data = SummerMBData1981_2020, aes(x=year))+
+  
+  geom_line(aes(y = bs))+
+  
+  geom_line( aes(y=AMOMay /coeff),color="green") +
+  
+  scale_y_continuous(
+    
+    # Features of the first axis
+    name = TeX(r"(Summer SMB ($m_{we}$))"),
+    
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*coeff, name="Mean AMO in May")) +
+  
+  xlab("year")+
+  
+  ggtitle("E")+
+  
+  
+  theme(axis.title.y.right = element_text(angle = 90))
+
+#Air temperature in July
+coeff <- 1
+
+pAirT_Jul <- ggplot(data = SummerMBData1981_2020, aes(x=year))+
+  
+  geom_line(aes(y = bs))+
+  
+  geom_line( aes(y=AirT_Jul /coeff -10),color="green") +
+  
+  scale_y_continuous(
+    
+    # Features of the first axis
+    name = TeX(r"(Summer SMB ($m_{we}$))"),
+    
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*coeff +10, name="Temperature in July (°C)")) +
+  
+  xlab("year")+
+  
+  ggtitle("D")+
+  
+  theme(axis.title.y.right = element_text(angle = 90))
+
+#SeaTSWMay
+coeff <- 0.25
+
+pSSTSWMay <- ggplot(data = SummerMBData1981_2020, aes(x=year))+
+  
+  geom_line(aes(y = bs))+
+  
+  geom_line( aes(y=sstSW_May /coeff),color="green") +
+  
+  scale_y_continuous(
+    
+    # Features of the first axis
+    name = TeX(r"(Summer SMB ($m_{we}$))"),
+    
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*coeff, name="Sea Temp SW in May (°C)")) +
+  
+  xlab("year")+
+  
+  ggtitle("F")+
+  
+  theme(axis.title.y.right = element_text(angle = 90))
+
+#AirTFeb
+coeff <- 0.5
+
+pAirT_Feb <- ggplot(data = WinterMBdata1981_2020, aes(x=year))+
+  
+  geom_line(aes(y = bw))+
+  
+  geom_line( aes(y=sstSW_May /coeff),color="green") +
+  
+  scale_y_continuous(
+    
+    # Features of the first axis
+    name = TeX(r"(Winter SMB ($m_{we}$))"),
+    
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*coeff, name="AirT in February (°C)")) +
+  
+  xlab("year")+
+  
+  ggtitle("A")+
+  
+  theme(axis.title.y.right = element_text(angle = 90))
+
+#GBINov
+coeff <- 3
+
+pGBINov <- ggplot(data = WinterMBdata1981_2020, aes(x=year))+
+  
+  geom_line(aes(y = bw))+
+  
+  geom_line( aes(y=GBINov /coeff),color="green") +
+  
+  scale_y_continuous(
+    
+    # Features of the first axis
+    name = TeX(r"(Winter SMB ($m_{we}$))"),
+    
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*coeff, name="GBI in November")) +
+  
+  xlab("year")+
+  
+  ggtitle("B")+
+  
+  theme(axis.title.y.right = element_text(angle = 90))
+
+#GBIwinter
+coeff <- 1
+
+pGBIwinter <- ggplot(data = WinterMBdata1981_2020, aes(x=year))+
+  
+  geom_line(aes(y = bw))+
+  
+  geom_line( aes(y=GBIwinter /coeff),color="green") +
+  
+  scale_y_continuous(
+    
+    # Features of the first axis
+    name = TeX(r"(Winter SMB ($m_{we}$))"),
+    
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*coeff, name="winter mean GBI")) +
+  
+  xlab("year")+
+  
+  ggtitle("C")+
+  
+  theme(axis.title.y.right = element_text(angle = 90))
+```
+
+
+```{r predict}
+#þá er að nota mötin á stykum líkansins til að spá aftur til 1890
+X_w <- as.matrix(cbind(rep(1,131),WinterMBData[61:191,c(4,18,85)]))
+BwPred <- X_w%*%B_bw
+
+
+X_s <- as.matrix(cbind(rep(1,131),SummerMBData[61:191,c(3,12,30)]))
+BsPred <- X_s%*%B_bs
+
+#Setja saman í gagnasett
+year <- 1890:2020
+PredTo1890 <- cbind.data.frame(year,BwPred,BsPred)
+```
+
+```{r fitt graphs}
+#myndir af bara fitt tímabilinu:
+g <- inner_join(
+  PredTo1890[PredTo1890$year > 1980,],FitData[,1:4],
+  by="year")
+
+p_wlm_bw <- ggplot(g,aes(x=year)) + 
+  geom_line(aes(y=BwPred),colour="red") +
+  geom_line(aes(y=bw)) + 
+  ylab(TeX("winnter SMB $\\[m_{we}\\]$"))
+
+p_wlm_bs <- ggplot(g,aes(x=year)) +
+  geom_line(aes(y=BsPred),colour="red") + 
+  geom_line(aes(y=bs)) + 
+  ylab(TeX("summer SMB $\\[m_{we}\\]$"))
+
+g$BnPred <- g$BwPred + g$BsPred
+
+p_wlm_bn <- ggplot(g,aes(x=year)) +
+  geom_line(aes(y=BnPred),colour="red") + 
+  geom_line(aes(y=bn)) + 
+  ylab(TeX("net SMB $\\[m_{we}\\]$"))
+```
+
+
+```{r long term estimates and the predict}
+#festa hermunina svo alltaf að vinna með saman
+set.seed(128)
+
+
+bn_1890_2019 <- read_excel("data/Fyrir Mörtu_bn-1890_2020.xls", range = cell_cols(c(1, 3)))[,-2]
+
+bn_1890_2020 <- rbind(bn_1890_2019,c(2002,-0.29334000))
+
+PredTo1890data <- left_join(bn_1890_2020,PredTo1890,by="year")
+
+LongPredTo1890data <- melt(PredTo1890data, id.vars = "year")
+
+PredTo1890Plot <- ggplot(data = LongPredTo1890data, aes(x = year, y = value, color=variable)) + geom_point()
+  
+
+#Líka mynd með nettó pred
+PredTo1890data$BnPred <- PredTo1890data$BwPred + PredTo1890data$BsPred
+LongPredbnTo1890data <- melt(PredTo1890data[,c(1,2,5)], id.vars = "year")
+PredTo1890nettoPlot <- ggplot(data = LongPredbnTo1890data[LongPredbnTo1890data$year<1981,], aes(x = year, y = value, color=variable)) + geom_point() + ylab(TeX("SMB $\\[m_{we}\\]$")) + xlab("Year") + scale_colour_Publication()+ theme_Publication()
+
+
+#og svo smooth
+  #[1,56][57,81][82,91]
+PredTo1890data$BnPredS <- c(rep(mean(PredTo1890data$BnPred[1:56]),56),rep(mean(PredTo1890data$BnPred[57:81]),25),rep(mean(PredTo1890data$BnPred[82:91]),10),PredTo1890data$BnPred[92:131])
+Uncertainty <- c(rep(0.1,81),rep(0.2,10),rep(0,40))
+PredTo1890data$BnHigh <- PredTo1890data$VbnSurf + Uncertainty
+PredTo1890data$BnLow <- PredTo1890data$VbnSurf - Uncertainty
+LongPredsmoothbnTo1890data <- melt(PredTo1890data[,c(1,2,6,7,8)], id.vars = c("year","BnHigh","BnLow"))
+PredTo1890nettosmoothPlot <- ggplot(data = LongPredsmoothbnTo1890data[LongPredsmoothbnTo1890data$year<1981,], aes(x = year, y = value, color=variable)) + geom_rect(aes(xmin = 1890, xmax = 1945, ymin = -0.43500000, ymax = -0.23500000), 
+            fill = "#386cb0", alpha = 0.01, color = NA) + geom_rect(aes(xmin = 1946, xmax = 1970, ymin = -0.44750000, ymax = -0.24750000), 
+            fill = "#386cb0", alpha = 0.01, color = NA) + geom_rect(aes(xmin = 1971, xmax = 1980, ymin = -0.2, ymax = 0.2), 
+            fill = "#386cb0", alpha = 0.01, color = NA) + geom_point() + ylab(TeX("SMB $\\[m_{we}\\]$")) + xlab("Year") + scale_colour_Publication()+ theme_Publication()
+
+#3ja myndinn er með uppsafnaðri(accumulative) nettó tölu.
+PredTo1890data$accumVbnSurf <- c(-1*PredTo1890data$VbnSurf[1:91] %>% accumulate(`+`, .dir = "backward"),PredTo1890data$VbnSurf[92:131] %>% accumulate(`+`))
+PredTo1890data$accumBnPred <- c(-1*PredTo1890data$BnPred[1:91] %>% accumulate(`+`, .dir = "backward"),PredTo1890data$BnPred[92:131] %>% accumulate(`+`))
+LongPredaccumTo1890data <- melt(PredTo1890data[,c(1,9,10)], id.vars = "year")
+PredTo1890accumPlot <- ggplot(data = LongPredaccumTo1890data[LongPredaccumTo1890data$year<1981,], aes(x = year, y = value, color=variable)) + geom_line() + ylab(TeX("SMB $\\[m_{we}\\]$")) + xlab("Year") + scale_colour_Publication()+ theme_Publication()
+#og sama með smooth spá
+PredTo1890data$accumSmoothBnPred <- c(-1*PredTo1890data$BnPredS[1:91] %>% accumulate(`+`, .dir = "backward"),PredTo1890data$BnPredS[92:131] %>% accumulate(`+`))
+PredTo1890data$accumVbnHihg <- c(-1*PredTo1890data$BnHigh[1:91] %>% accumulate(`+`, .dir = "backward"),PredTo1890data$BnHigh[92:131] %>% accumulate(`+`))
+PredTo1890data$accumVbnLow <- c(-1*PredTo1890data$BnLow[1:91] %>% accumulate(`+`, .dir = "backward"),PredTo1890data$BnLow[92:131] %>% accumulate(`+`))
+LongPredaccumSmoothTo1890data <- melt(PredTo1890data[,c(1,7,9)], id.vars = "year")
+PredTo1890accumSmoothPlot <- ggplot(data = PredTo1890data[PredTo1890data$year<1981,], aes(x = year)) + geom_ribbon(aes(ymin = accumVbnLow, ymax = accumVbnHihg), fill = "grey70") + geom_line(aes(y=accumVbnSurf)) + geom_line(aes(y=accumSmoothBnPred),color="red") + ylab(TeX("accumulated SMB $\\[m_{we}\\]$")) + xlab("Year") + scale_colour_Publication()+ theme_Publication()
+#herma dreifnina frá standard normal og bæta við staðalfrávikinu.
+SimulPredWinter <- PredTo1890data$BwPred
+SimulPredSummer <- PredTo1890data$BsPred
+for(i in 1:10){
+  PredWinterSigma <- rnorm(131, mean = 0, sd = sigma(winterlm1992))
+  PredSummerSigma <- rnorm(131, mean = 0, sd = sigma(summerlm1992))
+  SimulPredWinter <- cbind(SimulPredWinter,PredTo1890data$BwPred + PredWinterSigma)
+  SimulPredSummer <- cbind(SimulPredSummer,PredTo1890data$BsPred + PredSummerSigma)
+}
+
+SimulPredNetto <- SimulPredWinter + SimulPredSummer
+SimulPredData <- cbind(PredTo1890data[,1:2],SimulPredNetto)
+LongSimulPredData <- melt(SimulPredData, id.vars = "year")
+ggplot(data = LongSimulPredData, aes(x = year, y = value, color=variable)) + geom_line()
+
+
+#gera þessi hermunargögn accum
+SimulAccumData <- cbind.data.frame(year,PredTo1890data$accumVbnSurf)
+for(i in 1:11){
+  SimulAccumData <- cbind(SimulAccumData,c(-1*SimulPredNetto[1:91,i] %>% accumulate(`+`, .dir = "backward"),SimulPredNetto[92:131,i] %>% accumulate(`+`)))
+}
+colnames(SimulAccumData) <- c('year','VbnSurf','PredVbn','Simu1','Simu2','Simu3','Simu4','Simu5','Simu6','Simu7','Simu8','Simu9','Simu10')
+LongSimulAccumPredData <- melt(SimulAccumData, id.vars = "year")
+ggplot(data = LongSimulAccumPredData[LongSimulAccumPredData$year<1981,], aes(x = year, y = value, color=variable))+ geom_line() + ylab(TeX("accumulated SMB $\\[m_{we}\\]$")) + xlab("Year") + theme_Publication()
+
+
+#smooth líka svona
+
+#þarf að gera smooth fyrst og svo accum
+
+SimulSmoothData <- cbind.data.frame(year,PredTo1890data$VbnSurf)
+for(i in 1:11){
+  SimulSmoothData <- cbind(SimulSmoothData,c(rep(mean(SimulPredData[1:56,i+2]),56),rep(mean(SimulPredData[57:81,i+2]),25),rep(mean(SimulPredData[82:91,i+2]),10),SimulPredData[92:131,i+2]))
+}
+colnames(SimulSmoothData) <- c('year','VbnSurf','PredVbn','Simu1','Simu2','Simu3','Simu4','Simu5','Simu6','Simu7','Simu8','Simu9','Simu10')
+LongSimulSmoothPredData <- melt(SimulSmoothData, id.vars = "year")
+ggplot(data = LongSimulSmoothPredData, aes(x = year, y = value, color=variable)) + geom_line() + ylab(TeX("SMB $\\[m_{we}\\]$"))
+
+#mynd með boxunum fyrir óvissuna en líka öllum sim með
+PredTo1890nettosimmsmoothPlot <- ggplot(data = LongSimulSmoothPredData[LongSimulSmoothPredData$year<1981,], aes(x = year, y = value, color=variable)) + geom_rect(aes(xmin = 1890, xmax = 1945, ymin = -0.43500000, ymax = -0.23500000), 
+            fill = "grey70", alpha = 0.01, color = NA) + geom_rect(aes(xmin = 1946, xmax = 1970, ymin = -0.44750000, ymax = -0.24750000), 
+            fill = "grey70", alpha = 0.01, color = NA) + geom_rect(aes(xmin = 1971, xmax = 1980, ymin = -0.2, ymax = 0.2), 
+            fill = "grey70", alpha = 0.01, color = NA) + geom_point() + ylab(TeX("SMB $\\[m_{we}\\]$")) + xlab("Year") + theme_Publication()
+
+
+# nú accum úr smooth
+SimulAccumSmoothData <- cbind.data.frame(year,PredTo1890data$accumVbnSurf)
+for(i in 1:11){
+  SimulAccumSmoothData <- cbind(SimulAccumSmoothData,c(-1*SimulSmoothData[1:91,i+2] %>% accumulate(`+`, .dir = "backward"),SimulSmoothData[92:131,i+2] %>% accumulate(`+`)))
+}
+colnames(SimulAccumSmoothData) <- c('year','VbnSurf','PredVbn','Simu1','Simu2','Simu3','Simu4','Simu5','Simu6','Simu7','Simu8','Simu9','Simu10')
+LongSimulAccumSmoothPredData <- melt(SimulAccumSmoothData, id.vars = "year")
+ggplot(data = LongSimulAccumSmoothPredData, aes(x = year, y = value, color=variable)) + geom_line() + ylab(TeX("accumulated SMB $\\[m_{we}\\]$"))
+
+#gera mynd með accum simm og long-term með ribbon fyrir óvissuna
+SimulAccumSmoothData$accumVbnLow <- PredTo1890data$accumVbnLow
+SimulAccumSmoothData$accumVbnHihg <- PredTo1890data$accumVbnHihg
+PredTo1890simmaccumSmoothPlot <- ggplot(data = SimulAccumSmoothData[SimulAccumSmoothData$year<1981,], aes(x = year)) + geom_ribbon(aes(ymin = accumVbnLow, ymax = accumVbnHihg), fill = "grey70") + geom_line(aes(y=VbnSurf)) + geom_line(aes(y=Simu1),color="red") + geom_line(aes(y=Simu2),color="red") + geom_line(aes(y=Simu3),color="red") + geom_line(aes(y=Simu4),color="red") + geom_line(aes(y=Simu5),color="red") + geom_line(aes(y=Simu6),color="red") + geom_line(aes(y=Simu7),color="red") + geom_line(aes(y=Simu8),color="red") + geom_line(aes(y=Simu9),color="red") + geom_line(aes(y=Simu10),color="red") + ylab(TeX("accumulated SMB $\\[m_{we}\\]$")) + xlab("Year") + scale_colour_Publication()+ theme_Publication()
+```
+
+```{r graphs and other work}
+#Vinna að myndum til að byrta í lokaverkefni
+VMB2 <- VMB %>%
+  rename(summer=bs,winter=bw,net=bn)
+p_GMBdata <- melt(VMB2, id.vars = c("year","from"))
+p_GMBdata <- rename(p_GMBdata, season=variable)
+ggplot(p_GMBdata,aes(x=year,y=value,color=season)) + geom_line() + geom_point(aes(shape=from)) + ylab("GMB [m_{we}]")
+
+#prufa pakka til að setja inn latex math skrift
+library(latex2exp)
+ggplot(p_GMBdata,aes(x=year,y=value,color=season)) + geom_line() + geom_point(aes(shape=from)) + ylab(TeX("SMB $\\[m_{we}\\]$"))
+  #Þetta er flott graf
+#prufa annað þema
+source('~/ggplot_theme_Publication-2.R')
+ggplot(p_GMBdata,aes(x=year,y=value,color=season)) + geom_line() + geom_point(aes(shape=from)) + ylab(TeX("SMB $\\[m_{we}\\]$")) + scale_colour_Publication()+ theme_Publication()
+
+#Nú ætla ég að skoða AR af leifum í líkani sem ég nota.
+  #reikna fyrst rewsidual frá predict til gagna
+residual_bn <- PredTo1890data$VbnSurf - PredTo1890data$BnPred
+library(astsa)
+acf2(residual_bn)
+#Það er lag í 1 og 9. Athuga hvort við viljum aðhafast í því.
+
+#Ég á að skoða AR fyrir tíman sem ég fitta módelið með en ekki hér þegar spáinn er.
+acf2(residual_bn[92:130])
+#hér er engin sjálffylgni sem er það sem skiptir máli.
+# til að sýna vel á mynd sem er hægt að birta
+conf.level <- 0.95
+ciline <- qnorm((1 - conf.level)/2)/sqrt(length(residual_bn[92:130]))
+bacf <- acf(residual_bn[92:130], plot = FALSE)
+bacfdf <- with(bacf, data.frame(lag, acf))
+q <- ggplot(data = bacfdf[1:9,], mapping = aes(x = lag, y = acf)) +
+       geom_hline(aes(yintercept = 0)) +
+       geom_segment(mapping = aes(xend = lag, yend = 0)) + geom_hline(aes(yintercept = ciline), linetype = 2, color = 'darkblue') + geom_hline(aes(yintercept = -ciline), linetype = 2, color = 'darkblue')
+q 
+
+#prufa líka fyrir sumar og vetrar fitt án viktunar
+acf(lmbw2$residuals)
+conf.level <- 0.95
+ciline <- qnorm((1 - conf.level)/2)/sqrt(length(lmbw2$residuals))
+bacf <- acf(lmbw2$residuals, plot = FALSE)
+bacfdf <- with(bacf, data.frame(lag, acf))
+wq <- ggplot(data = bacfdf, mapping = aes(x = lag, y = acf)) +
+       geom_hline(aes(yintercept = 0)) +
+       geom_segment(mapping = aes(xend = lag, yend = 0)) + geom_hline(aes(yintercept = ciline), linetype = 2, color = 'darkblue') + geom_hline(aes(yintercept = -ciline), linetype = 2, color = 'darkblue')
+wq 
+acf(lmbs1$residuals)
+conf.level <- 0.95
+ciline <- qnorm((1 - conf.level)/2)/sqrt(length(lmbs1$residuals))
+bacf <- acf(lmbs1$residuals, plot = FALSE)
+bacfdf <- with(bacf, data.frame(lag, acf))
+sq <- ggplot(data = bacfdf, mapping = aes(x = lag, y = acf)) +
+       geom_hline(aes(yintercept = 0)) +
+       geom_segment(mapping = aes(xend = lag, yend = 0)) + geom_hline(aes(yintercept = ciline), linetype = 2, color = 'darkblue') + geom_hline(aes(yintercept = -ciline), linetype = 2, color = 'darkblue')
+sq 
+#hér er ekki sjálffilgni heldur
+
+
+
+#Mynd af stórskalagögnunum einum og sér
+ggplot(bn_1890_2019[1:91,], aes(year,VbnSurf)) + geom_line() + ylab(TeX("SMB $\\[m_{we}\\]$"))
+```
+
+```{r RMSE}
+#reikna úr RMSE fyrir líkönin sumar, vetur og nettó og predictinn líka.
+
+#RMSE fyrir winter fitt
+RMSEwinterfit <- sqrt(mean((g$bw - g$BwPred)^2))
+#RMSE fyrir summer fitt
+RMSEsummerfit <- sqrt(mean((g$bs - g$BsPred)^2))
+#RMSE fyrir nettó fitt
+RMSEnetfit <- sqrt(mean((g$bn - g$BnPred)^2))
+#RMSE fyrir predict
+RMSEPredict <- sqrt(mean((PredTo1890data$VbnSurf - PredTo1890data$BnPred)^2))
+RMSEPredictS <- sqrt(mean((PredTo1890data$VbnSurf - PredTo1890data$BnPredS)^2))
+```
+
+
+
+
+
+
